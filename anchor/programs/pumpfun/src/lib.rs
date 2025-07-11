@@ -3,9 +3,9 @@
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
-use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface, MintTo, mint_to, SetAuthority, set_authority, TransferChecked, transfer_checked, Burn, burn}};
+use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface, MintTo, mint_to, SetAuthority, set_authority, TransferChecked, transfer_checked, Burn, burn, spl_token_2022::instruction::AuthorityType}};
 
-declare_id!("FqzkXZdwYjurnUKetJCAvaUw5WAqbwzU6gZEwydeEfqS");
+declare_id!("5ENQgn6CTuDUxEyntSuuALPQBkJj9Fd917kyL3Kbwccc");
 
 #[constant]
 pub const MINT_SEED: &[u8] = b"mint";
@@ -14,10 +14,15 @@ pub const VAULT_SEED: &[u8] = b"vault";
 pub const ANCHOR_DISCRIMINATOR: usize = 8;
 
 #[program]
-pub mod counter {
+pub mod pumpfun {
     use super::*;
 
     pub fn create_listing(ctx: Context<List>, seed: u64, name: String) -> Result<()> {
+        // Store the bump values before initializing the listing
+        let listing_bump = ctx.bumps.listing;
+        let vault_bump = ctx.bumps.sol_vault;
+        let mint_bump = ctx.bumps.mint;
+        
         ctx.accounts.listing.set_inner(Listing { 
             name, 
             seed, 
@@ -28,9 +33,9 @@ pub mod counter {
             available_tokens: 200_000, 
             base_price: 0.001, 
             tokens_sold: 0, 
-            bump: ctx.bumps.listing, 
-            vault_bump: ctx.bumps.sol_vault, 
-            mint_bump: ctx.bumps.mint
+            bump: listing_bump, 
+            vault_bump, 
+            mint_bump
         });
 
         //TODO: add fee
@@ -44,20 +49,19 @@ pub mod counter {
             to: ctx.accounts.mint_vault.to_account_info(),
             authority: ctx.accounts.listing.to_account_info()
         };
-        // let listing = ctx.accounts.listing;
-        let seeds = &[
-            b"listing"[..],
-            &ctx.accounts.listing.seed.to_le_bytes(),
-            &[ctx.accounts.listing.bump],
+        let seeds: &[&[u8]; 3] = &[
+            LISTING_SEED,
+            &seed.to_le_bytes(),
+            &[listing_bump]
         ];
         let signer_seeds = &[&seeds[..]];
 
-        let ctx = CpiContext::new_with_signer(
+        let cpi_ctx = CpiContext::new_with_signer(
             cpi_program.clone(), 
             accounts, 
             signer_seeds
         );
-        mint_to(ctx, amount_to_mint as u64)?;
+        mint_to(cpi_ctx, amount_to_mint as u64)?;
 
         let accounts = SetAuthority {
             account_or_mint: ctx.accounts.mint.to_account_info(),
@@ -65,7 +69,7 @@ pub mod counter {
         };
 
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, accounts, signer_seeds);
-        set_authority(cpi_ctx, spl_token_2022::instruction::AuthorityType::MintTokens, None)?;
+        set_authority(cpi_ctx, AuthorityType::MintTokens, None)?;
 
         Ok(())
     }
@@ -87,7 +91,7 @@ pub mod counter {
             to: ctx.accounts.user_ata.to_account_info(),
             authority: ctx.accounts.listing.to_account_info(),
         };
-        let seeds = &[
+        let seeds: &[&[u8]; 3] = &[
             LISTING_SEED,
             &ctx.accounts.listing.seed.to_le_bytes(),
             &[ctx.accounts.listing.bump]
@@ -104,7 +108,7 @@ pub mod counter {
     pub fn sell(ctx: Context<Swap>, amount: u128) -> Result<()> {
         //TODO: Add checks
         //TODO: add slippage
-        let total_value = BongingCurve::calculate_price_fixed(amount, ctx.accounts.listing.available_tokens, ctx.accounts.listing.base_price);
+        let total_value = BondingCurve::calculate_price_fixed(amount, ctx.accounts.listing.available_tokens, ctx.accounts.listing.base_price);
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_accounts = TransferChecked {
@@ -123,7 +127,7 @@ pub mod counter {
         };
         let seeds = &[
             VAULT_SEED,
-            &ctx.accounts.listing.seed.to_be_bytes(),
+            &ctx.accounts.listing.seed.to_le_bytes(),
             &[ctx.accounts.listing.vault_bump]
         ];
         let signer_seeds = &[&seeds[..]];
@@ -137,6 +141,9 @@ pub mod counter {
     }
 
     pub fn burn_tokens(ctx: Context<BurnTokens>, amount: u64) -> Result<()> {
+        // Add validation
+        require!(amount > 0, PumpError::InvalidAmount);
+        
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_accounts = Burn {
             mint: ctx.accounts.mint.to_account_info(),
@@ -154,15 +161,14 @@ pub mod counter {
 pub struct List<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-
     #[account(
         init,
-        payer = signer,
         seeds = [MINT_SEED, seed.to_le_bytes().as_ref()],
         bump,
+        payer = signer,
         mint::decimals = 6,
         mint::authority = listing,
-        mint::token_program = token_program
+        mint::token_program = token_program,
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
@@ -186,10 +192,12 @@ pub struct List<'info> {
         bump
     )]
     pub sol_vault: SystemAccount<'info>,
+
     pub token_program: Interface<'info, TokenInterface>,
-    pub associated_token_program: Program<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
+
 #[derive(Accounts)]
 pub struct Swap<'info> {
     #[account(mut)]
@@ -231,51 +239,53 @@ pub struct Swap<'info> {
     pub system_program: Program<'info, System>,
 }
 
+// Fixed BurnTokens struct with proper pub visibility
 #[derive(Accounts)]
 pub struct BurnTokens<'info> {
     #[account(mut)]
-    user: Signer<'info>,
+    pub user: Signer<'info>,
     #[account(
         mut,
         seeds = [MINT_SEED, listing.seed.to_le_bytes().as_ref()],
         bump = listing.mint_bump,
     )]
-    mint: InterfaceAccount<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
-        seeds = [VAULT_SEED, listing.seed.to_be_bytes().as_ref()],
+        seeds = [VAULT_SEED, listing.seed.to_le_bytes().as_ref()],
         bump = listing.vault_bump
     )]
-    sol_vault: SystemAccount<'info>,
+    pub sol_vault: SystemAccount<'info>,
     #[account(
         mut,
         seeds = [LISTING_SEED, listing.seed.to_le_bytes().as_ref()],
         bump = listing.bump,
     )]
-    listing: Account<'info, Listing>,
+    pub listing: Account<'info, Listing>,
     #[account(
         mut,
         associated_token::mint = mint,
         associated_token::authority = listing,
     )]
-    mint_vault: InterfaceAccount<'info, TokenAccount>,
+    pub mint_vault: InterfaceAccount<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = user,
         associated_token::mint = mint,
         associated_token::authority = user,
     )]
-    user_ata: InterfaceAccount<'info, TokenAccount>,
+    pub user_ata: InterfaceAccount<'info, TokenAccount>,
 
-    token_program: Interface<'info, TokenInterface>,
-    associated_token_program: Program<'info, AssociatedToken>,
-    system_program: Program<'info, System>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BongingCurve;
-impl BongingCurve {
-    fn calculate_price_original(&self, amount: u128, initial_supply: u128, base_price: f64) -> f64 {
+pub struct BondingCurve;
+
+impl BondingCurve {
+    fn calculate_price_original(amount: u128, initial_supply: u128, base_price: f64) -> f64 {
         let remaining_supply = initial_supply.saturating_sub(amount);
         let supply_ratio = remaining_supply as f64 / initial_supply as f64;
         let k = 20.0;
@@ -294,7 +304,7 @@ impl BongingCurve {
 
         for i in 0..steps {
             let current_amount = current_supply + (i as u128 * amount_per_step);
-            let step_price = Self.calculate_price_original(current_amount, initial_supply, base_price);
+            let step_price = Self::calculate_price_original(current_amount, initial_supply, base_price);
             total_cost += step_price * (amount_per_step as f64 / 1_000_000.0);
         }
 

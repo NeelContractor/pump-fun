@@ -1,4 +1,4 @@
-import CounterFeature from '@/components/counter/counter-feature'
+import CounterFeature from '@/components/pumpfun/counter-feature'
 
 export default function Page() {
   return <CounterFeature />
