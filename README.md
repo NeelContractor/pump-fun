@@ -1,3 +1,3 @@
 # pump-fun
 
-- Currently building
+Pumpfun Token launchpad, buy, sell tokens on solana.

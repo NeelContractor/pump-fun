@@ -1,5 +1,5 @@
-import { DashboardFeature } from '@/components/dashboard/dashboard-feature'
+import PumpfunDashboard from '@/components/pumpfun/Pumpfun'
 
 export default function Home() {
-  return <DashboardFeature />
+  return <PumpfunDashboard />
 }
